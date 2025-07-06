@@ -5,33 +5,38 @@ const openai = process.env.OPENAI_API_KEY ? new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 }) : null;
 
+// Helper to safely parse JSON from AI responses
+const safeJSONParse = (text) => {
+  try {
+    const json = text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1);
+    return JSON.parse(json);
+  } catch {
+    return null;
+  }
+};
+
 export const parseUserRequest = async (userInput) => {
-  // If OpenAI is available, use it for better parsing
   if (openai) {
     try {
       const response = await openai.chat.completions.create({
-        model: "gpt-3.5-turbo",
+        model: 'gpt-3.5-turbo',
         messages: [
           {
-            role: "system",
-            content: `You are an AI assistant that analyzes user requests for mobile app generation. 
-            
-Based on the user's description, determine:
-1. The best template type (restaurant, business, ecommerce, fitness, directory)
-2. Extract customizations like business name, colors, and specific features
+            role: 'system',
+            content: `You are an AI assistant that classifies app ideas and extracts customization details.
 
-Available templates:
-- restaurant: For food service, restaurants, cafes, food delivery
-- business: For professional services, clinics, consulting, general business
-- ecommerce: For online stores, product catalogs, shopping
-- fitness: For gyms, wellness, workout tracking, health apps
-- directory: For listings, directories, marketplace, search-based apps
+Choose the closest template from this list even if the user uses synonyms or vague language:
+ - restaurant
+ - business
+ - ecommerce
+ - fitness
+ - directory
 
-Respond with ONLY a JSON object in this format:
+Return ONLY a JSON object in this format:
 {
   "template": "template_name",
   "customizations": {
-    "businessName": "extracted_name",
+    "businessName": "name or default",
     "primaryColor": "#hexcode",
     "secondaryColor": "#hexcode",
     "backgroundColor": "#hexcode",
@@ -39,10 +44,10 @@ Respond with ONLY a JSON object in this format:
   }
 }
 
-If you can't determine something, use sensible defaults.`
+Use sensible defaults if details are missing.`
           },
           {
-            role: "user",
+            role: 'user',
             content: userInput
           }
         ],
@@ -50,13 +55,16 @@ If you can't determine something, use sensible defaults.`
         max_tokens: 300
       });
 
-      const parsed = JSON.parse(response.choices[0].message.content);
-      return parsed;
+      const aiContent = response.choices[0].message.content;
+      const parsed = safeJSONParse(aiContent);
+      if (parsed && parsed.template) {
+        return parsed;
+      }
     } catch (error) {
       console.error('OpenAI parsing error:', error);
-      // Fall back to simple parsing
-      return fallbackParsing(userInput);
     }
+    // Fallback if OpenAI parsing fails
+    return fallbackParsing(userInput);
   }
   
   // Fall back to simple keyword matching
@@ -183,38 +191,29 @@ export const parseModificationRequest = async (userInput, existingCode) => {
 
 const fallbackParsing = (userInput) => {
   const input = userInput.toLowerCase();
-  
-  // Simple keyword matching - fallback when OpenAI is not available
-  if (input.includes('restaurant') || input.includes('food') || input.includes('menu') || input.includes('order') || input.includes('pizza') || input.includes('cafe')) {
-    return {
-      template: 'restaurant',
-      customizations: extractCustomizations(userInput)
-    };
-  } else if (input.includes('business') || input.includes('service') || input.includes('company') || input.includes('clinic') || input.includes('office')) {
-    return {
-      template: 'business',
-      customizations: extractCustomizations(userInput)
-    };
-  } else if (input.includes('shop') || input.includes('store') || input.includes('buy') || input.includes('sell') || input.includes('product') || input.includes('ecommerce')) {
-    return {
-      template: 'ecommerce',
-      customizations: extractCustomizations(userInput)
-    };
-  } else if (input.includes('fitness') || input.includes('gym') || input.includes('workout') || input.includes('health') || input.includes('wellness')) {
-    return {
-      template: 'fitness',
-      customizations: extractCustomizations(userInput)
-    };
-  } else if (input.includes('directory') || input.includes('listing') || input.includes('search') || input.includes('find') || input.includes('browse')) {
-    return {
-      template: 'directory',
-      customizations: extractCustomizations(userInput)
-    };
-  }
-  
-  // Default to restaurant if unclear
+
+  // Keyword groups with simple synonyms
+  const keywordMap = {
+    restaurant: ['restaurant', 'food', 'menu', 'order', 'pizza', 'cafe', 'dine', 'bar', 'delivery'],
+    business: ['business', 'service', 'company', 'clinic', 'office', 'professional', 'consult', 'corporate'],
+    ecommerce: ['shop', 'store', 'buy', 'sell', 'product', 'ecommerce', 'cart', 'checkout', 'payment'],
+    fitness: ['fitness', 'gym', 'workout', 'health', 'wellness', 'exercise', 'training', 'yoga'],
+    directory: ['directory', 'listing', 'search', 'find', 'browse', 'marketplace', 'catalog']
+  };
+
+  let bestTemplate = 'restaurant';
+  let bestScore = 0;
+
+  Object.entries(keywordMap).forEach(([template, words]) => {
+    const score = words.reduce((acc, word) => acc + (input.includes(word) ? 1 : 0), 0);
+    if (score > bestScore) {
+      bestTemplate = template;
+      bestScore = score;
+    }
+  });
+
   return {
-    template: 'restaurant',
+    template: bestTemplate,
     customizations: extractCustomizations(userInput)
   };
 };

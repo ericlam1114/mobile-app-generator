@@ -20,6 +20,14 @@ You can start editing the page by modifying `app/page.js`. The page auto-updates
 
 This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
 
+## AI Parser
+
+The built‑in parser now relies on OpenAI to interpret free‑form prompts. It asks
+the model to pick the closest template from our supported list and extract basic
+customization details. When no API key is available or the AI response cannot be
+parsed, the parser falls back to a lightweight keyword scoring system with
+common synonyms.
+
 ## Learn More
 
 To learn more about Next.js, take a look at the following resources:
