@@ -53,9 +53,12 @@ export default function Home() {
                 <Globe className="w-4 h-4" />
                 Get free credits
               </button>
-              <button className="bg-purple-600 text-white px-4 py-2 rounded-lg hover:bg-purple-700 flex items-center gap-2">
+              <button 
+                onClick={() => router.push('/dashboard')}
+                className="bg-purple-600 text-white px-4 py-2 rounded-lg hover:bg-purple-700 flex items-center gap-2"
+              >
                 <span className="w-6 h-6 bg-white/20 rounded-full flex items-center justify-center text-sm">M</span>
-                My Lovable
+                My Projects
               </button>
             </div>
           </div>

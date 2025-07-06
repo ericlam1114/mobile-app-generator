@@ -17,34 +17,102 @@ export default function ProjectPage() {
   const [generatedCode, setGeneratedCode] = useState(null)
   const [activeView, setActiveView] = useState('preview')
   const [liveCode, setLiveCode] = useState(null)
+  const [project, setProject] = useState(null)
+  const [iterations, setIterations] = useState([])
+  const [currentIteration, setCurrentIteration] = useState(null)
+  const [loading, setLoading] = useState(true)
+
+  // Demo user ID - in a real app, this would come from authentication
+  const DEMO_USER_ID = 'demo-user-123'
 
   useEffect(() => {
-    // Get the initial prompt from sessionStorage
-    const initialPrompt = sessionStorage.getItem(`project-${projectId}`)
-    if (initialPrompt) {
-      // Initialize with the prompt
-      setMessages([
-        {
-          id: 1,
-          type: 'user',
-          content: initialPrompt
-        },
-        {
-          id: 2,
-          type: 'assistant',
-          content: "I'll help you build that app. Let me generate the initial version for you..."
-        }
-      ])
-      
-      // Trigger app generation
-      generateApp(initialPrompt)
-      
-      // Clean up sessionStorage
-      sessionStorage.removeItem(`project-${projectId}`)
-    }
+    loadProject()
   }, [projectId])
 
-  const generateApp = async (userInput, isModification = false) => {
+  const loadProject = async () => {
+    try {
+      setLoading(true)
+      
+      // Check if this is a new project from sessionStorage
+      const initialPrompt = sessionStorage.getItem(`project-${projectId}`)
+      if (initialPrompt) {
+        // Create new project in database
+        const response = await fetch('/api/projects', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            userId: DEMO_USER_ID,
+            name: 'New Project',
+            description: 'Generated from prompt',
+            initialPrompt: initialPrompt,
+            businessName: 'App'
+          })
+        })
+        
+        if (response.ok) {
+          const newProject = await response.json()
+          setProject(newProject)
+          
+          // Initialize with the prompt
+          setMessages([
+            {
+              id: 1,
+              type: 'user',
+              content: initialPrompt
+            },
+            {
+              id: 2,
+              type: 'assistant',
+              content: "I'll help you build that app. Let me generate the initial version for you..."
+            }
+          ])
+          
+          // Trigger app generation
+          generateApp(initialPrompt, false, newProject.id)
+          
+          // Clean up sessionStorage
+          sessionStorage.removeItem(`project-${projectId}`)
+        }
+      } else {
+        // Load existing project
+        const [projectResponse, messagesResponse, iterationsResponse] = await Promise.all([
+          fetch(`/api/projects/${projectId}`),
+          fetch(`/api/projects/${projectId}/messages`),
+          fetch(`/api/projects/${projectId}/iterations`)
+        ])
+        
+        if (projectResponse.ok && messagesResponse.ok && iterationsResponse.ok) {
+          const [projectData, messagesData, iterationsData] = await Promise.all([
+            projectResponse.json(),
+            messagesResponse.json(),
+            iterationsResponse.json()
+          ])
+          
+          setProject(projectData)
+          setMessages(messagesData.map(msg => ({
+            id: msg.id,
+            type: msg.message_type,
+            content: msg.content
+          })))
+          setIterations(iterationsData)
+          
+          // Set current iteration
+          const current = iterationsData.find(it => it.is_current) || iterationsData[0]
+          if (current) {
+            setCurrentIteration(current)
+            setGeneratedCode(current.generated_code)
+            setLiveCode(current.generated_code)
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Error loading project:', error)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const generateApp = async (userInput, isModification = false, projectIdOverride = null) => {
     setIsGenerating(true)
     
     try {
@@ -67,10 +135,35 @@ export default function ProjectPage() {
       }
 
       const result = await response.json()
+      const currentProjectId = projectIdOverride || project?.id
       
       if (isModification) {
         // For modifications, update the live code
         setLiveCode(result)
+        
+        // Create new iteration
+        if (currentProjectId) {
+          const nextVersion = Math.max(...iterations.map(i => i.version_number), 0) + 1
+          
+          const iterationResponse = await fetch(`/api/projects/${currentProjectId}/iterations`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              prompt: userInput,
+              generatedCode: result,
+              features: result.features || [],
+              modificationSummary: result.modificationSummary,
+              versionNumber: nextVersion,
+              isCurrent: true
+            })
+          })
+          
+          if (iterationResponse.ok) {
+            const newIteration = await iterationResponse.json()
+            setIterations(prev => [newIteration, ...prev])
+            setCurrentIteration(newIteration)
+          }
+        }
         
         // Add success message for modification
         const successMessage = {
@@ -80,10 +173,44 @@ export default function ProjectPage() {
         }
         
         setMessages(prev => [...prev, successMessage])
+        
+        // Save message to database
+        if (currentProjectId) {
+          await fetch(`/api/projects/${currentProjectId}/messages`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              messageType: 'assistant',
+              content: successMessage.content,
+              iterationId: currentIteration?.id
+            })
+          })
+        }
       } else {
         // For new generation, set both generated and live code
         setGeneratedCode(result)
         setLiveCode(result)
+        
+        // Create initial iteration
+        if (currentProjectId) {
+          const iterationResponse = await fetch(`/api/projects/${currentProjectId}/iterations`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              prompt: userInput,
+              generatedCode: result,
+              features: result.features || [],
+              versionNumber: 1,
+              isCurrent: true
+            })
+          })
+          
+          if (iterationResponse.ok) {
+            const newIteration = await iterationResponse.json()
+            setIterations([newIteration])
+            setCurrentIteration(newIteration)
+          }
+        }
         
         // Add success message
         const successMessage = {
@@ -98,6 +225,30 @@ The app is ready with ${Object.keys(result.files).length} files. You can see the
         }
         
         setMessages(prev => [...prev, successMessage])
+        
+        // Save messages to database
+        if (currentProjectId) {
+          await Promise.all([
+            fetch(`/api/projects/${currentProjectId}/messages`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                messageType: 'user',
+                content: userInput,
+                iterationId: currentIteration?.id
+              })
+            }),
+            fetch(`/api/projects/${currentProjectId}/messages`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                messageType: 'assistant',
+                content: successMessage.content,
+                iterationId: currentIteration?.id
+              })
+            })
+          ])
+        }
       }
     } catch (error) {
       console.error('Error generating app:', error)
@@ -124,6 +275,19 @@ The app is ready with ${Object.keys(result.files).length} files. You can see the
     setMessages(prev => [...prev, userMessage])
     const currentInput = input
     setInput('')
+
+    // Save user message to database
+    if (project?.id) {
+      await fetch(`/api/projects/${project.id}/messages`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          messageType: 'user',
+          content: currentInput,
+          iterationId: currentIteration?.id
+        })
+      })
+    }
 
     // Determine if this is a modification request
     const isModification = generatedCode !== null
@@ -182,6 +346,17 @@ The app is ready with ${Object.keys(result.files).length} files. You can see the
   // Use liveCode for preview if available, otherwise use generatedCode
   const codeForPreview = liveCode || generatedCode
 
+  if (loading) {
+    return (
+      <div className="h-screen flex items-center justify-center bg-gray-50">
+        <div className="text-center">
+          <div className="animate-spin w-8 h-8 border-2 border-purple-600 border-t-transparent rounded-full mx-auto mb-4"></div>
+          <p className="text-gray-600">Loading project...</p>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="h-screen flex flex-col bg-gray-50">
       {/* Top Navigation */}
@@ -197,7 +372,7 @@ The app is ready with ${Object.keys(result.files).length} files. You can see the
             
             <div>
               <h1 className="font-semibold text-gray-900">
-                {codeForPreview?.customizations?.businessName || 'New Project'}
+                {project?.name || codeForPreview?.customizations?.businessName || 'New Project'}
               </h1>
               <p className="text-sm text-gray-500">Mobile App</p>
             </div>
@@ -240,6 +415,43 @@ The app is ready with ${Object.keys(result.files).length} files. You can see the
       <div className="flex-1 flex overflow-hidden">
         {/* Left Panel - Chat */}
         <div className="w-96 bg-white border-r border-gray-200 flex flex-col">
+          {/* Iterations Sidebar */}
+          {iterations.length > 1 && (
+            <div className="border-b border-gray-200 p-3">
+              <h3 className="text-sm font-medium text-gray-900 mb-2">Versions</h3>
+              <div className="space-y-1 max-h-32 overflow-y-auto">
+                {iterations.map((iteration) => (
+                  <button
+                    key={iteration.id}
+                    onClick={() => {
+                      setCurrentIteration(iteration)
+                      setLiveCode(iteration.generated_code)
+                      setGeneratedCode(iteration.generated_code)
+                    }}
+                    className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors ${
+                      currentIteration?.id === iteration.id
+                        ? 'bg-purple-100 text-purple-800'
+                        : 'hover:bg-gray-100 text-gray-700'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <span>v{iteration.version_number}</span>
+                      <span className="text-xs text-gray-500">
+                        {new Date(iteration.created_at).toLocaleDateString()}
+                      </span>
+                    </div>
+                    {iteration.modification_summary && (
+                      <p className="text-xs text-gray-600 mt-1 truncate">
+                        {iteration.modification_summary}
+                      </p>
+                    )}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+          
+          {/* Chat Section */}
           <div className="p-4 border-b border-gray-200">
             <h2 className="font-semibold text-gray-900 flex items-center gap-2">
               <MessageCircle className="w-5 h-5" />
